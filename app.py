@@ -1,8 +1,22 @@
 from flask import Flask, render_template_string, request, redirect, jsonify
 import psycopg2
 from datetime import datetime
+import os
+import psycopg2
+from urllib.parse import urlparse
 
 app = Flask(__name__)
+
+def get_conn():
+    db_url = os.getenv("DATABASE_URL", "postgresql://postgres:admin@localhost:5433/plant_watering")
+    result = urlparse(db_url)
+    return psycopg2.connect(
+        dbname=result.path[1:],
+        user=result.username,
+        password=result.password,
+        host=result.hostname,
+        port=result.port
+    )
 
 def get_conn():
     return psycopg2.connect(
@@ -37,6 +51,10 @@ TEMPLATE = """
   <div class="d-flex justify-content-end mb-3">
     <a href="/logs" class="btn btn-outline-secondary">🧾 View Water Log</a>
   </div>
+  <div class="mb-4 p-3 bg-white shadow-sm rounded">
+    <h4>🌹 Rose - Live Moisture</h4>
+    <p id="live-moisture">Fetching...</p>
+</div>
   <div class="row g-4">
     {% for r in rows %}
     <div class="col-md-4">
@@ -118,6 +136,28 @@ function showChart(plantID, plantName) {
       new bootstrap.Modal(document.getElementById('chartModal')).show();
     });
 }
+</script>
+<script>
+function fetchLiveMoisture() {
+    fetch('/latest_sensor')
+        .then(response => response.json())
+        .then(data => {
+            if (data.moisture !== null) {
+                document.getElementById('live-moisture').innerText =
+                    `Moisture: ${data.moisture.toFixed(1)}% (as of ${data.time})`;
+            } else {
+                document.getElementById('live-moisture').innerText = "No data available";
+            }
+        })
+        .catch(err => {
+            console.error("Error fetching live sensor:", err);
+            document.getElementById('live-moisture').innerText = "Error fetching data";
+        });
+}
+
+// Fetch immediately and then every 3 seconds
+fetchLiveMoisture();
+setInterval(fetchLiveMoisture, 3000);
 </script>
 </body>
 </html>
@@ -204,6 +244,31 @@ def logs():
         table_html += f"<tr><td>{l[0]}</td><td>{l[1]}</td><td>{l[2]}</td><td>{l[3]}</td></tr>"
     table_html += "</tbody></table><a href='/' class='btn btn-outline-success'>⬅ Back to Dashboard</a></div>"
     return table_html
+
+@app.route('/latest_sensor')
+def latest_sensor():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT moisturevalue, readingtime
+        FROM SensorData
+        ORDER BY readingtime DESC
+        LIMIT 1;
+    """)
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    
+    if row and row[0] is not None and row[1] is not None:
+        # Ensure float and datetime formatting
+        try:
+            moisture = float(row[0])
+            reading_time = row[1].strftime("%Y-%m-%d %H:%M:%S")
+            return jsonify({'moisture': moisture, 'time': reading_time})
+        except Exception as e:
+            return jsonify({'moisture': None, 'time': None, 'error': str(e)})
+    
+    return jsonify({'moisture': None, 'time': None})
 
 if __name__ == '__main__':
     app.run(debug=True)
